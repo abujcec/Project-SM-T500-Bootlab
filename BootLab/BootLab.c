@@ -1,14 +1,18 @@
 /** @file
-  T500 BootLab: minimal ARM64 UEFI diagnostics application.
+  T500 BootLab v0.2: read-only Windows Boot Manager chainload test.
 
-  This first version is intentionally read-only. It does not modify NVRAM,
-  partitions, EFI files, or the Windows boot configuration.
+  Scans UEFI Simple File System handles for the existing Microsoft ARM64
+  boot manager. It does not write partitions, BCD, EFI files, or NVRAM.
 **/
 
 #include <Uefi.h>
+#include <Protocol/SimpleFileSystem.h>
 #include <Library/UefiLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiApplicationEntryPoint.h>
+#include <Library/DevicePathLib.h>
+
+#define WINDOWS_BOOT_MANAGER_PATH L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"
 
 EFI_STATUS
 EFIAPI
@@ -17,26 +21,37 @@ UefiMain (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  EFI_STATUS  Status;
-  UINTN       HandleCount;
-  EFI_HANDLE  *Handles;
-  EFI_INPUT_KEY Key;
+  EFI_STATUS                       Status;
+  EFI_STATUS                       StartStatus;
+  UINTN                            HandleCount;
+  EFI_HANDLE                       *Handles;
+  EFI_HANDLE                       FoundHandle;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  EFI_DEVICE_PATH_PROTOCOL         *BootManagerPath;
+  EFI_HANDLE                       WindowsImage;
+  EFI_INPUT_KEY                    Key;
+  UINTN                            Index;
 
-  (VOID)ImageHandle;
+  (VOID)SystemTable;
+
+  FoundHandle = NULL;
+  Handles = NULL;
+  HandleCount = 0;
+  BootManagerPath = NULL;
+  WindowsImage = NULL;
 
   Print(L"\n========================================\n");
-  Print(L"          T500 BootLab v0.1              \n");
+  Print(L"          T500 BootLab v0.2              \n");
   Print(L"========================================\n");
-  Print(L"Read-only UEFI diagnostics\n\n");
-  Print(L"Firmware vendor  : %s\n", SystemTable->FirmwareVendor);
-  Print(L"Firmware revision: 0x%08x\n", SystemTable->FirmwareRevision);
-  Print(L"UEFI revision    : %u.%u\n",
-        SystemTable->Hdr.Revision >> 16,
-        SystemTable->Hdr.Revision & 0xffff);
+  Print(L"Windows ARM64 chainload experiment\n");
+  Print(L"Firmware vendor  : %s\n", gST->FirmwareVendor);
+  Print(L"Firmware revision: 0x%08x\n", gST->FirmwareRevision);
 
-  Print(L"\nLocating Simple File System handles...\n");
-  HandleCount = 0;
-  Handles = NULL;
+  Print(L"\nScanning %s on UEFI filesystem volumes...\n",
+        WINDOWS_BOOT_MANAGER_PATH);
+
   Status = gBS->LocateHandleBuffer(
                   ByProtocol,
                   &gEfiSimpleFileSystemProtocolGuid,
@@ -46,17 +61,119 @@ UefiMain (
                   );
 
   if (EFI_ERROR(Status)) {
-    Print(L"Simple File System lookup failed: %r\n", Status);
-  } else {
-    Print(L"Simple File System handles: %u\n", HandleCount);
-    if (Handles != NULL) {
-      gBS->FreePool(Handles);
-    }
+    Print(L"Filesystem enumeration failed: %r\n", Status);
+    goto Done;
   }
 
-  Print(L"\nNo files or boot settings were changed.\n");
+  Print(L"Found %u filesystem handles.\n", HandleCount);
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    FileSystem = NULL;
+    Root = NULL;
+    File = NULL;
+
+    Status = gBS->HandleProtocol(
+                    Handles[Index],
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&FileSystem
+                    );
+    if (EFI_ERROR(Status) || (FileSystem == NULL)) {
+      continue;
+    }
+
+    Status = FileSystem->OpenVolume(FileSystem, &Root);
+    if (EFI_ERROR(Status) || (Root == NULL)) {
+      continue;
+    }
+
+    Status = Root->Open(
+                    Root,
+                    &File,
+                    WINDOWS_BOOT_MANAGER_PATH,
+                    EFI_FILE_MODE_READ,
+                    0
+                    );
+
+    if (!EFI_ERROR(Status) && (File != NULL)) {
+      File->Close(File);
+      Root->Close(Root);
+      FoundHandle = Handles[Index];
+      Print(L"Windows Boot Manager found on filesystem handle %u.\n",
+            Index);
+      break;
+    }
+
+    Root->Close(Root);
+  }
+
+  if (Handles != NULL) {
+    gBS->FreePool(Handles);
+    Handles = NULL;
+  }
+
+  if (FoundHandle == NULL) {
+    Print(L"\nWindows Boot Manager was not found.\n");
+    Print(L"Check that the EFI partition is visible to this firmware.\n");
+    goto Done;
+  }
+
+  BootManagerPath = FileDevicePath(
+                      FoundHandle,
+                      WINDOWS_BOOT_MANAGER_PATH
+                      );
+  if (BootManagerPath == NULL) {
+    Print(L"Could not construct the boot manager device path.\n");
+    goto Done;
+  }
+
+  Print(L"\nPress Y to launch Windows Boot Manager.\n");
+  Print(L"Press any other key to cancel.\n");
+
+  do {
+    Status = gST->ConIn->ReadKeyStroke(gST->ConIn, &Key);
+    if (Status == EFI_NOT_READY) {
+      gBS->Stall(10000);
+    }
+  } while (Status == EFI_NOT_READY);
+
+  if (EFI_ERROR(Status) ||
+      ((Key.UnicodeChar != L'y') && (Key.UnicodeChar != L'Y'))) {
+    Print(L"Chainload cancelled. No boot settings were changed.\n");
+    goto Done;
+  }
+
+  Print(L"\nLoading Windows Boot Manager...\n");
+  Status = gBS->LoadImage(
+                  FALSE,
+                  ImageHandle,
+                  BootManagerPath,
+                  NULL,
+                  0,
+                  &WindowsImage
+                  );
+  if (EFI_ERROR(Status)) {
+    Print(L"LoadImage failed: %r\n", Status);
+    goto Done;
+  }
+
+  Print(L"Starting Windows Boot Manager...\n");
+  StartStatus = gBS->StartImage(WindowsImage, NULL, NULL);
+  Print(L"Windows Boot Manager returned: %r\n", StartStatus);
+
+  gBS->UnloadImage(WindowsImage);
+
+Done:
+  if (BootManagerPath != NULL) {
+    gBS->FreePool(BootManagerPath);
+  }
+
+  if (Handles != NULL) {
+    gBS->FreePool(Handles);
+  }
+
+  Print(L"\nBootLab finished. No EFI files, BCD, partitions, or NVRAM were modified.\n");
   Print(L"Press any key to return to the UEFI menu...\n");
-  while (SystemTable->ConIn->ReadKeyStroke(SystemTable->ConIn, &Key) == EFI_NOT_READY) {
+  while (gST->ConIn->ReadKeyStroke(gST->ConIn, &Key) == EFI_NOT_READY) {
     gBS->Stall(10000);
   }
 
