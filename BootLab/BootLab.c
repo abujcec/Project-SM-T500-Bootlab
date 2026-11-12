@@ -1,8 +1,9 @@
 /** @file
-  T500 BootLab v0.2: read-only Windows Boot Manager chainload test.
+  T500 BootLab v0.3: automatic Windows Boot Manager chainload test.
 
   Scans UEFI Simple File System handles for the existing Microsoft ARM64
-  boot manager. It does not write partitions, BCD, EFI files, or NVRAM.
+  boot manager and launches it immediately when found. It does not write
+  partitions, BCD, EFI files, or NVRAM.
 **/
 
 #include <Uefi.h>
@@ -31,7 +32,6 @@ UefiMain (
   EFI_FILE_PROTOCOL                *File;
   EFI_DEVICE_PATH_PROTOCOL         *BootManagerPath;
   EFI_HANDLE                       WindowsImage;
-  EFI_INPUT_KEY                    Key;
   UINTN                            Index;
 
   (VOID)SystemTable;
@@ -43,9 +43,9 @@ UefiMain (
   WindowsImage = NULL;
 
   Print(L"\n========================================\n");
-  Print(L"          T500 BootLab v0.2              \n");
+  Print(L"          T500 BootLab v0.3              \n");
   Print(L"========================================\n");
-  Print(L"Windows ARM64 chainload experiment\n");
+  Print(L"Automatic Windows ARM64 chainload\n");
   Print(L"Firmware vendor  : %s\n", gST->FirmwareVendor);
   Print(L"Firmware revision: 0x%08x\n", gST->FirmwareRevision);
 
@@ -126,23 +126,7 @@ UefiMain (
     goto Done;
   }
 
-  Print(L"\nPress Y to launch Windows Boot Manager.\n");
-  Print(L"Press any other key to cancel.\n");
-
-  do {
-    Status = gST->ConIn->ReadKeyStroke(gST->ConIn, &Key);
-    if (Status == EFI_NOT_READY) {
-      gBS->Stall(10000);
-    }
-  } while (Status == EFI_NOT_READY);
-
-  if (EFI_ERROR(Status) ||
-      ((Key.UnicodeChar != L'y') && (Key.UnicodeChar != L'Y'))) {
-    Print(L"Chainload cancelled. No boot settings were changed.\n");
-    goto Done;
-  }
-
-  Print(L"\nLoading Windows Boot Manager...\n");
+  Print(L"\nLaunching Windows Boot Manager automatically...\n");
   Status = gBS->LoadImage(
                   FALSE,
                   ImageHandle,
@@ -172,10 +156,5 @@ Done:
   }
 
   Print(L"\nBootLab finished. No EFI files, BCD, partitions, or NVRAM were modified.\n");
-  Print(L"Press any key to return to the UEFI menu...\n");
-  while (gST->ConIn->ReadKeyStroke(gST->ConIn, &Key) == EFI_NOT_READY) {
-    gBS->Stall(10000);
-  }
-
   return EFI_SUCCESS;
 }
