@@ -1,0 +1,17 @@
+# EDK II build output
+Build/
+Conf/
+*.efi
+*.pdb
+*.map
+*.obj
+*.lib
+*.lst
+*.hii
+*.depex
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
